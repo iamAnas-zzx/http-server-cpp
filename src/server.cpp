@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <queue>
 #include <condition_variable>
+#include <zlib.h>
 
 // Constants
 #define PORT 4221
@@ -69,6 +70,32 @@ std::string get_path(std::string &request) {
     return split(req[0], " ")[1];
 }
 
+// Function for encoding data
+std::string gzip_compress(const std::string &data) {
+    z_stream zs;
+    std::memset(&zs, 0, sizeof(zs));
+    if (deflateInit2(&zs, Z_BEST_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        throw std::runtime_error("deflateInit2 failed while compressing.");
+    }
+    zs.next_in = (Bytef *)data.data();
+    zs.avail_in = data.size();
+    int ret;
+    char outbuffer[32768];
+    std::string outstring;
+    do {
+        zs.next_out = reinterpret_cast<Bytef *>(outbuffer);
+        zs.avail_out = sizeof(outbuffer);
+        ret = deflate(&zs, Z_FINISH);
+        if (outstring.size() < zs.total_out) {
+            outstring.append(outbuffer, zs.total_out - outstring.size());
+        }
+    } while (ret == Z_OK);
+    deflateEnd(&zs);
+    if (ret != Z_STREAM_END) {
+        throw std::runtime_error("Exception during zlib compression: (" + std::to_string(ret) + ") " + (zs.msg ? zs.msg : ""));
+    }
+    return outstring;
+}
 
 // Handle Request Function
 void handle_request(int client)
@@ -100,10 +127,14 @@ void handle_request(int client)
             response = "HTTP/1.1 200 OK\r\n\r\n";
         }
         else if (path_parts[1] == "echo" && headers.count("Accept-Encoding")){
-          if(headers["Accept-Encoding"] == "gzip")
-            response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\n\r\n";
-          else 
-          response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
+            std::string encodedTypes = headers["Accept-Encoding"];
+            std::string gzipText; 
+            if(encodedTypes.find("gzip")!= std::string::npos){
+                gzipText = gzip_compress(path_parts[2]); 
+                response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: " + std::to_string(gzipText.size()) + "\r\n\r\n" + gzipText;
+            }
+            else 
+                response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n";
         }
         else if (path_parts[1] == "echo" && path_parts.size() > 2)
         {
